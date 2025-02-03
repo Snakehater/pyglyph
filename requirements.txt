@@ -1,0 +1,6 @@
+pydub
+numpy
+matplotlib
+pyaudio
+scipy
+mutagen
