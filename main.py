@@ -134,6 +134,7 @@ def audio_visualizer(wav_file):
     # Initialize PyQtGraph UI
     app = QtWidgets.QApplication([])
     win = pg.GraphicsLayoutWidget(title="Real-Time Frequency Spectrum")
+    win.resize(1200, 800)
     plot = win.addPlot(title="Frequency Spectrum")
     plot.setLogMode(x=True, y=False)  # Log scale for frequency
     plot.setLabel('bottom', "Frequency (Hz)")
