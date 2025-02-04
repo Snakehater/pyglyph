@@ -13,6 +13,9 @@ from mutagen.oggopus import OggOpus
 import threading
 import time
 from scipy.interpolate import interp1d
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtWidgets, QtCore
+import threading
 
 # Convert MP3 to WAV
 def convert_mp3_to_wav(mp3_file, wav_file):
@@ -20,14 +23,16 @@ def convert_mp3_to_wav(mp3_file, wav_file):
     audio.export(wav_file, format="wav")
 
 # Precompute FFT for the entire WAV file
-def precompute_fft(wav_file, chunk_size=8192):
+def precompute_fft(wav_file, chunk_size=2048, overlap=0.5):
     wf = wave.open(wav_file, 'rb')
     frame_rate = wf.getframerate()
     total_frames = wf.getnframes()
+    step_size = int(chunk_size * (1 - overlap)) # Overlapping windows for more fft data
     fft_results = []
     timestamps = []
     
-    for i in range(0, total_frames, chunk_size):
+    for i in range(0, total_frames - chunk_size, step_size):
+        wf.setpos(i)
         data = wf.readframes(chunk_size)
         if len(data) < chunk_size * wf.getsampwidth():
             break
@@ -37,6 +42,7 @@ def precompute_fft(wav_file, chunk_size=8192):
         timestamps.append(i / frame_rate)
 
     wf.close()
+    print(f"FFT Computation: Frequency range: 0Hz to {frame_rate/2:.2f}Hz, Resolution: {len(fft_results[0])} Chunk duration: {chunk_size/frame_rate:.3f} seconds, Data length: {(chunk_size/frame_rate)*len(fft_results):.3f}")
     return fft_results, timestamps, frame_rate, chunk_size
 
 # Validate OGG file to ensure it has a valid Opus stream
@@ -50,7 +56,7 @@ def validate_ogg(ogg_file):
 
 # Generate an OGG file compatible with Nothing Glyph
 def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=False):
-    fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=8192)
+    fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048, overlap=0.5)
     bass_levels = []
 
     # Extract frequencies in the specified range
@@ -62,13 +68,20 @@ def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=Fal
         bass_levels.append(int((band_amplitude / max(1, np.max(fft_data))) * 4095))
 
     # Remap values to between 0 and 4095 (max value for each led)
-    intr = interp1d([0,max(bass_levels)], [0,4095])
+    intr = interp1d([0, max(bass_levels)], [0, 4095], fill_value=(0, 4095), bounds_error=False)
     bass_levels = np.asarray(np.array(intr(bass_levels)), dtype="int")
+    
+    # Ensure each frame corresponds to 1/60th of a second
+    # and ensure smooth brightness updates per 1/60s
+    expected_frames = int((timestamps[-1] - timestamps[0]) * 60)  # Total number of frames needed
+    bass_levels = np.interp(np.linspace(0, len(bass_levels)-1, expected_frames), np.arange(len(bass_levels)), bass_levels)
+    bass_levels = np.round(bass_levels).astype(int)
     
     # Generate CSV light data for USB Line
     csv_lines = []
     for level in bass_levels:
         csv_lines.append(f"0,0,0,0,0,0,0,{level},{level},{level},{level},{level},{level},{level},{level},\r\n")
+    csv_lines.append(f"0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\r\n")
     
     # Compress and encode `AUTHOR` tag
     author_data = base64.b64encode(zlib.compress("".join(csv_lines).encode("utf-8"), level=9)).decode("utf-8")
@@ -103,6 +116,101 @@ def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=Fal
         print(f"Number of lines: {len(bass_levels)}")
         print(f"Sound length: {ogg.info.length}s")
         print(f"Glyph length: {len(bass_levels)*(1/60)}s")
+
+def audio_visualizer(wav_file):
+    print("Running optimized audio visualizer...")
+    
+    # Precompute FFT for visualization
+    fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*1, overlap=0.5)
+
+    # Open audio stream
+    wf = wave.open(wav_file, 'rb')
+    p = pyaudio.PyAudio()
+    stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
+                    channels=wf.getnchannels(),
+                    rate=wf.getframerate(),
+                    output=True)
+
+    # Initialize PyQtGraph UI
+    app = QtWidgets.QApplication([])
+    win = pg.GraphicsLayoutWidget(title="Real-Time Frequency Spectrum")
+    plot = win.addPlot(title="Frequency Spectrum")
+    plot.setLogMode(x=True, y=False)  # Log scale for frequency
+    plot.setLabel('bottom', "Frequency (Hz)")
+    plot.setLabel('left', "Magnitude")
+    plot.setRange(yRange=(0, 20000000), xRange=(0, 22000))  # Adjust range based on your data
+
+    # Prepare frequency axis
+    x = np.fft.fftfreq(chunk_size, d=1/frame_rate)[:chunk_size//2]
+    curve = plot.plot(x, np.zeros_like(x), pen="r")
+    
+    # Set X range and LOCK it
+    plot.setXRange(0, 5, padding=0)
+    plot.vb.setLimits(xMin=0, xMax=5)
+
+    # Label to display selected frequency range
+    freq_label = pg.LabelItem(justify='right')
+    win.addItem(freq_label)
+
+    # Convert frequencies to log scale for selection
+    def freq_to_log(freq):
+        return np.log10(freq)
+
+    def log_to_freq(log_val):
+        return 10 ** log_val
+
+    # Create a frequency selection region
+    region = pg.LinearRegionItem(values=(0,1), movable=True)
+    region.setZValue(10)
+    plot.addItem(region)
+
+    # Function to update frequency label when region selection changes
+    def update_selected_range():
+        min_freq, max_freq = region.getRegion()
+        freq_label.setText(f"Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz")
+
+    region.sigRegionChanged.connect(update_selected_range)
+    update_selected_range()  # Initialize label
+
+    # Enable zooming & panning with mouse
+    plot.setMouseEnabled(x=True, y=False)
+
+    # Shared index for synchronization
+    index = [0]
+
+    # Thread for audio playback
+    def play_audio():
+        while index[0] < len(fft_results):
+            data = wf.readframes(chunk_size)
+            if len(data) == 0:
+                break
+            stream.write(data)
+            index[0] += 2  # Move to the next FFT frame
+
+    audio_thread = threading.Thread(target=play_audio)
+    audio_thread.start()
+
+    # Function to update the plot
+    def update_plot():
+        if index[0] < len(fft_results):
+            curve.setData(x, fft_results[index[0]])
+
+    # Timer for real-time updates (~60 FPS)
+    timer = QtCore.QTimer()
+    timer.timeout.connect(update_plot)
+    timer.start(int((chunk_size / frame_rate) * 1000))  # Ensure update interval matches audio playback
+
+    # Show UI
+    win.show()
+    app.exec_()
+
+    # Wait for audio to finish
+    audio_thread.join()
+
+    # Cleanup
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
 
 # Main function
 def main():

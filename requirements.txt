@@ -4,3 +4,5 @@ matplotlib
 pyaudio
 scipy
 mutagen
+pyqtgraph
+PyQt5
