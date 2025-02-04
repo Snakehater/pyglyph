@@ -54,6 +54,18 @@ def validate_ogg(ogg_file):
     except Exception as e:
         raise RuntimeError(f"FFmpeg validation failed: {e}")
 
+def bar(level, max_level, entries):
+    ret = ""
+    span = max_level/entries
+    for i in range(entries):
+        if i != 0:
+            ret += ","
+        if level > span*(i + 1):
+            ret += "4096"
+        else:
+            ret += "0"
+    return ret
+
 # Generate an OGG file compatible with Nothing Glyph
 def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=False):
     fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048, overlap=0.5)
@@ -80,7 +92,7 @@ def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=Fal
     # Generate CSV light data for USB Line
     csv_lines = []
     for level in bass_levels:
-        csv_lines.append(f"0,0,0,0,0,0,0,{level},{level},{level},{level},{level},{level},{level},{level},\r\n")
+        csv_lines.append(f"0,0,0,0,0,0,0,{bar(level, max(bass_levels),8)},\r\n")
     csv_lines.append(f"0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\r\n")
     
     # Compress and encode `AUTHOR` tag
@@ -218,8 +230,8 @@ def main():
     parser = argparse.ArgumentParser(description="Process MP3 and generate Nothing-compatible OGG files or visualize audio.")
     parser.add_argument("-c", action="store_true", help="Create an OGG file for Nothing Glyph Composer")
     parser.add_argument("-i", action="store_true", help="Inspect CUSTOM1 data when used with -c")
-    parser.add_argument("-l", type=int, default=400, help="Lower frequency bound for bass extraction (Hz)")
-    parser.add_argument("-u", type=int, default=700, help="Upper frequency bound for bass extraction (Hz)")
+    parser.add_argument("-l", type=int, default=20, help="Lower frequency bound for bass extraction (Hz)")
+    parser.add_argument("-u", type=int, default=210, help="Upper frequency bound for bass extraction (Hz)")
     args = parser.parse_args()
     
     mp3_file = "pedro.mp3"
