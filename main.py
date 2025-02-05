@@ -283,6 +283,7 @@ def audio_visualizer(wav_file):
     def update_selected_range():
         min_freq, max_freq = region.getRegion()
         freq_label.setText(f"Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz")
+        # TODO one slider for each band, dynamically
         bands = [
             (0,0,1),
             (0,0,1),
@@ -325,7 +326,6 @@ def audio_visualizer(wav_file):
             #if min_freq >= 0 and max_freq < len(fft_results[index[0]]):
             #    bar_window.update(bass_levels[index[0]])
             glyph_win.glyph_update(glyph_data[0][index[0]])
-            print(glyph_data[0][-30])
 
     # Timer for real-time updates (~60 FPS)
     timer = QtCore.QTimer()
