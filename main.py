@@ -14,7 +14,7 @@ import threading
 import time
 from scipy.interpolate import interp1d
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtWidgets, QtCore
+from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 import threading
 
 # Convert MP3 to WAV
@@ -54,34 +54,48 @@ def validate_ogg(ogg_file):
     except Exception as e:
         raise RuntimeError(f"FFmpeg validation failed: {e}")
 
-def bar(level, max_level, entries):
+def bar(level, entries):
     ret = ""
-    span = max_level/entries
+    span = 4095/entries
     for i in range(entries):
         if i != 0:
             ret += ","
         if level > span*(i + 1):
-            ret += "4096"
+            ret += "4095"
         else:
             ret += "0"
     return ret
 
+def bass_levels_gen_idx(fft_results, low_index, high_index):
+    bass_levels = []
+    max_level = max(max(x) for x in fft_results)
+    for fft_data in fft_results:
+        #band_amplitude = np.sum(fft_data[low_index:high_index])
+        #bass_levels.append(int((band_amplitude / max(1, np.max(fft_data))) * 4095))
+        bass_levels.append(int(np.max(fft_data[low_index:high_index] / max_level) * 4095))
+
+    # Remap values to between 0 and 4095 (max value for each led)
+    intr = interp1d([0, max(bass_levels)], [0, 4095], fill_value=(0, 4095), bounds_error=False)
+    bass_levels = np.asarray(np.array(intr(bass_levels)), dtype="int")
+    return bass_levels, max_level
+
+def bass_levels_gen(fft_results, frame_rate, chunk_size, low_freq, high_freq):
+    # Extract frequencies in the specified range
+    low_index = int(low_freq / (frame_rate / chunk_size))
+    high_index = int(high_freq / (frame_rate / chunk_size))
+    return bass_levels_gen_idx(fft_results, low_index, high_index)
+
 # Generate an OGG file compatible with Nothing Glyph
 def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=False):
-    fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048, overlap=0.5)
+    fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*4, overlap=0.5)
     bass_levels = []
 
     # Extract frequencies in the specified range
     low_index = int(low_freq / (frame_rate / chunk_size))
     high_index = int(high_freq / (frame_rate / chunk_size))
 
-    for fft_data in fft_results:
-        band_amplitude = np.sum(fft_data[low_index:high_index])
-        bass_levels.append(int((band_amplitude / max(1, np.max(fft_data))) * 4095))
-
-    # Remap values to between 0 and 4095 (max value for each led)
-    intr = interp1d([0, max(bass_levels)], [0, 4095], fill_value=(0, 4095), bounds_error=False)
-    bass_levels = np.asarray(np.array(intr(bass_levels)), dtype="int")
+    # Generate bass levels
+    bass_levels, max_level = bass_levels_gen_idx(fft_results, low_index, high_index)
     
     # Ensure each frame corresponds to 1/60th of a second
     # and ensure smooth brightness updates per 1/60s
@@ -92,7 +106,7 @@ def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=Fal
     # Generate CSV light data for USB Line
     csv_lines = []
     for level in bass_levels:
-        csv_lines.append(f"0,0,0,0,0,0,0,{bar(level, max(bass_levels),8)},\r\n")
+        csv_lines.append(f"0,0,0,0,0,0,0,{bar(level, 8)},\r\n")
     csv_lines.append(f"0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\r\n")
     
     # Compress and encode `AUTHOR` tag
@@ -129,11 +143,41 @@ def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=Fal
         print(f"Sound length: {ogg.info.length}s")
         print(f"Glyph length: {len(bass_levels)*(1/60)}s")
 
+class BarWindow(QtWidgets.QWidget):
+    """ A separate window with eight vertically stacked colored boxes. """
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Bar")
+        self.setGeometry(300, 300, 300, 800)  # Adjusted height for 8 boxes
+        layout = QtWidgets.QVBoxLayout()
+
+        # Default colors for the boxes
+        self.boxes = []
+
+        for i in range(8):
+            box = QtWidgets.QLabel()
+            box.setStyleSheet(f"background-color: black; min-height: 80px;")
+            layout.addWidget(box)
+            self.boxes.append(box)
+
+        self.setLayout(layout)
+        self.show()  # Show the window immediately
+
+    def update(self, level):
+        entries = 8
+        span = 4095/entries
+        for i in range(entries):
+            if level > span*(i + 1):
+                self.boxes[entries - 1 - i].setStyleSheet(f"background-color: white; min-height: 80px")
+            else:
+                self.boxes[entries - 1 - i].setStyleSheet(f"background-color: black; min-height: 80px")
+
 def audio_visualizer(wav_file):
     print("Running optimized audio visualizer...")
     
     # Precompute FFT for visualization
     fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*1, overlap=0.5)
+    bass_levels, max_level = bass_levels_gen(fft_results, frame_rate, chunk_size, 0, 100)
 
     # Open audio stream
     wf = wave.open(wav_file, 'rb')
@@ -152,6 +196,15 @@ def audio_visualizer(wav_file):
     plot.setLabel('bottom', "Frequency (Hz)")
     plot.setLabel('left', "Magnitude")
     plot.setRange(yRange=(0, 20000000), xRange=(0, 22000))  # Adjust range based on your data
+
+    # Add keyboard shortcut for "Q" to quit the application
+    shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Q"), win)
+    def kill_session():
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        exit()
+    shortcut.activated.connect(kill_session)
 
     # Prepare frequency axis
     x = np.fft.fftfreq(chunk_size, d=1/frame_rate)[:chunk_size//2]
@@ -173,7 +226,7 @@ def audio_visualizer(wav_file):
         return 10 ** log_val
 
     # Create a frequency selection region
-    region = pg.LinearRegionItem(values=(0,1), movable=True)
+    region = pg.LinearRegionItem(values=(freq_to_log(20),freq_to_log(277)), movable=True)
     region.setZValue(10)
     plot.addItem(region)
 
@@ -181,6 +234,7 @@ def audio_visualizer(wav_file):
     def update_selected_range():
         min_freq, max_freq = region.getRegion()
         freq_label.setText(f"Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz")
+        bass_levels, max_level = bass_levels_gen(fft_results, frame_rate, chunk_size, log_to_freq(min_freq), log_to_freq(max_freq))
 
     region.sigRegionChanged.connect(update_selected_range)
     update_selected_range()  # Initialize label
@@ -203,10 +257,18 @@ def audio_visualizer(wav_file):
     audio_thread = threading.Thread(target=play_audio)
     audio_thread.start()
 
+    # Show the bar window
+    bar_window = BarWindow()
+
     # Function to update the plot
     def update_plot():
         if index[0] < len(fft_results):
             curve.setData(x, fft_results[index[0]])
+            min_freq, max_freq = region.getRegion()
+            min_freq = log_to_freq(min_freq)
+            max_freq = log_to_freq(max_freq)
+            if min_freq >= 0 and max_freq < len(fft_results[index[0]]):
+                bar_window.update(bass_levels[index[0]])
 
     # Timer for real-time updates (~60 FPS)
     timer = QtCore.QTimer()
