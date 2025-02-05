@@ -16,6 +16,7 @@ from scipy.interpolate import interp1d
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 import threading
+from glyph import GlyphUI
 
 # Convert MP3 to WAV
 def convert_mp3_to_wav(mp3_file, wav_file):
@@ -54,19 +55,27 @@ def validate_ogg(ogg_file):
     except Exception as e:
         raise RuntimeError(f"FFmpeg validation failed: {e}")
 
-def bar(level, entries):
+def bar(level, entries, genarr=False):
     ret = ""
+    retarr = []
     span = 4095/entries
     for i in range(entries):
-        if i != 0:
+        if i != 0 and not genarr:
             ret += ","
         if level > span*(i + 1):
-            ret += "4095"
+            if genarr:
+                retarr += [255]
+            else:
+                ret += "4095"
+        elif genarr:
+            retarr += [0]
         else:
             ret += "0"
+    if genarr:
+        return retarr
     return ret
 
-def bass_levels_gen_idx(fft_results, low_index, high_index):
+def band_levels_gen_idx(fft_results, low_index, high_index):
     bass_levels = []
     max_level = max(max(x) for x in fft_results)
     for fft_data in fft_results:
@@ -79,34 +88,49 @@ def bass_levels_gen_idx(fft_results, low_index, high_index):
     bass_levels = np.asarray(np.array(intr(bass_levels)), dtype="int")
     return bass_levels, max_level
 
-def bass_levels_gen(fft_results, frame_rate, chunk_size, low_freq, high_freq):
+# Middle layer that converts from freq to index
+def band_levels_gen(fft_results, frame_rate, chunk_size, low_freq, high_freq):
     # Extract frequencies in the specified range
     low_index = int(low_freq / (frame_rate / chunk_size))
     high_index = int(high_freq / (frame_rate / chunk_size))
-    return bass_levels_gen_idx(fft_results, low_index, high_index)
+    return band_levels_gen_idx(fft_results, low_index, high_index)
 
-# Generate an OGG file compatible with Nothing Glyph
-def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=False):
-    fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*4, overlap=0.5)
-    bass_levels = []
+def band_compute(low_freq, high_freq, fft_results, timestamps, frame_rate, chunk_size, simulation):
+    levels = []
 
     # Extract frequencies in the specified range
     low_index = int(low_freq / (frame_rate / chunk_size))
     high_index = int(high_freq / (frame_rate / chunk_size))
 
     # Generate bass levels
-    bass_levels, max_level = bass_levels_gen_idx(fft_results, low_index, high_index)
-    
-    # Ensure each frame corresponds to 1/60th of a second
-    # and ensure smooth brightness updates per 1/60s
-    expected_frames = int((timestamps[-1] - timestamps[0]) * 60)  # Total number of frames needed
-    bass_levels = np.interp(np.linspace(0, len(bass_levels)-1, expected_frames), np.arange(len(bass_levels)), bass_levels)
-    bass_levels = np.round(bass_levels).astype(int)
-    
-    # Generate CSV light data for USB Line
-    csv_lines = []
+    levels, max_level = band_levels_gen_idx(fft_results, low_index, high_index)
+
+    if not simulation:
+        # Ensure each frame corresponds to 1/60th of a second
+        # and ensure smooth brightness updates per 1/60s
+        expected_frames = int((timestamps[-1] - timestamps[0]) * 60)  # Total number of frames needed
+        levels = np.interp(np.linspace(0, len(levels)-1, expected_frames), np.arange(len(levels)), levels)
+        levels = np.round(levels).astype(int)
+    return levels
+
+def glyph_compute(fft_results, timestamps, frame_rate, chunk_size, simulation=False):
+    ret = []
+    bass_levels = band_compute(20, 277, fft_results, timestamps, frame_rate, chunk_size, simulation)
     for level in bass_levels:
-        csv_lines.append(f"0,0,0,0,0,0,0,{bar(level, 8)},\r\n")
+        if simulation:
+            ret.append([0,0,0,0,0,0,0] + bar(level, 8, genarr=simulation))
+        else:
+            ret.append(f"0,0,0,0,0,0,0,{bar(level, 8)},\r\n")
+    return ret
+
+# Generate an OGG file compatible with Nothing Glyph
+def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=False):
+    fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*4, overlap=0.5)
+
+    # Generate CSV light data for USB Line
+    csv_lines = glyph_compute(fft_results, timestamps, frame_rate, chunk_size)
+
+    # Add blank line at the end to turn off the glyph leds
     csv_lines.append(f"0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\r\n")
     
     # Compress and encode `AUTHOR` tag
@@ -143,41 +167,12 @@ def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=Fal
         print(f"Sound length: {ogg.info.length}s")
         print(f"Glyph length: {len(bass_levels)*(1/60)}s")
 
-class BarWindow(QtWidgets.QWidget):
-    """ A separate window with eight vertically stacked colored boxes. """
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Bar")
-        self.setGeometry(300, 300, 300, 800)  # Adjusted height for 8 boxes
-        layout = QtWidgets.QVBoxLayout()
-
-        # Default colors for the boxes
-        self.boxes = []
-
-        for i in range(8):
-            box = QtWidgets.QLabel()
-            box.setStyleSheet(f"background-color: black; min-height: 80px;")
-            layout.addWidget(box)
-            self.boxes.append(box)
-
-        self.setLayout(layout)
-        self.show()  # Show the window immediately
-
-    def update(self, level):
-        entries = 8
-        span = 4095/entries
-        for i in range(entries):
-            if level > span*(i + 1):
-                self.boxes[entries - 1 - i].setStyleSheet(f"background-color: white; min-height: 80px")
-            else:
-                self.boxes[entries - 1 - i].setStyleSheet(f"background-color: black; min-height: 80px")
-
 def audio_visualizer(wav_file):
     print("Running optimized audio visualizer...")
     
     # Precompute FFT for visualization
     fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*1, overlap=0.5)
-    bass_levels, max_level = bass_levels_gen(fft_results, frame_rate, chunk_size, 0, 100)
+    glyph_data = glyph_compute(fft_results, timestamps, frame_rate, chunk_size, simulation=True)
 
     # Open audio stream
     wf = wave.open(wav_file, 'rb')
@@ -196,6 +191,8 @@ def audio_visualizer(wav_file):
     plot.setLabel('bottom', "Frequency (Hz)")
     plot.setLabel('left', "Magnitude")
     plot.setRange(yRange=(0, 20000000), xRange=(0, 22000))  # Adjust range based on your data
+
+    glyph_win = GlyphUI()
 
     # Add keyboard shortcut for "Q" to quit the application
     shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Q"), win)
@@ -234,7 +231,7 @@ def audio_visualizer(wav_file):
     def update_selected_range():
         min_freq, max_freq = region.getRegion()
         freq_label.setText(f"Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz")
-        bass_levels, max_level = bass_levels_gen(fft_results, frame_rate, chunk_size, log_to_freq(min_freq), log_to_freq(max_freq))
+        #bass_levels, max_level = band_levels_gen(fft_results, frame_rate, chunk_size, log_to_freq(min_freq), log_to_freq(max_freq))
 
     region.sigRegionChanged.connect(update_selected_range)
     update_selected_range()  # Initialize label
@@ -257,9 +254,6 @@ def audio_visualizer(wav_file):
     audio_thread = threading.Thread(target=play_audio)
     audio_thread.start()
 
-    # Show the bar window
-    bar_window = BarWindow()
-
     # Function to update the plot
     def update_plot():
         if index[0] < len(fft_results):
@@ -267,8 +261,9 @@ def audio_visualizer(wav_file):
             min_freq, max_freq = region.getRegion()
             min_freq = log_to_freq(min_freq)
             max_freq = log_to_freq(max_freq)
-            if min_freq >= 0 and max_freq < len(fft_results[index[0]]):
-                bar_window.update(bass_levels[index[0]])
+            #if min_freq >= 0 and max_freq < len(fft_results[index[0]]):
+            #    bar_window.update(bass_levels[index[0]])
+            glyph_win.glyph_update(glyph_data[index[0]])
 
     # Timer for real-time updates (~60 FPS)
     timer = QtCore.QTimer()
@@ -277,6 +272,7 @@ def audio_visualizer(wav_file):
 
     # Show UI
     win.show()
+    glyph_win.show()
     app.exec_()
 
     # Wait for audio to finish
