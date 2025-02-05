@@ -75,60 +75,102 @@ def bar(level, entries, genarr=False):
         return retarr
     return ret
 
-def band_levels_gen_idx(fft_results, low_index, high_index):
-    bass_levels = []
-    max_level = max(max(x) for x in fft_results)
-    for fft_data in fft_results:
-        #band_amplitude = np.sum(fft_data[low_index:high_index])
-        #bass_levels.append(int((band_amplitude / max(1, np.max(fft_data))) * 4095))
-        bass_levels.append(int(np.max(fft_data[low_index:high_index] / max_level) * 4095))
+def bands_levels_gen(fft_results, bands):
+    bands_levels = []
+    max_levels = []
+    # Make sure we have the correct amount of bands in the bands_levels
+    for band in bands:
+        if band[0] == band[1]:
+            bands_levels.append(None)
+            max_levels.append(0)
+        else:
+            bands_levels.append([])
+            ## TODO remove the one that does not work, np is more efficiant if the conversion to np array is fast enough
+            max_levels.append(np.max(np.array(fft_results)[:, band[0]:band[1]]))
+            #max_levels.append(max(max(x[band[0]:band[1]]) for x in fft_results))
 
-    # Remap values to between 0 and 4095 (max value for each led)
-    intr = interp1d([0, max(bass_levels)], [0, 4095], fill_value=(0, 4095), bounds_error=False)
-    bass_levels = np.asarray(np.array(intr(bass_levels)), dtype="int")
-    return bass_levels, max_level
+    # iterate over fft_results and for each frame, add maximum value in each band to each band
+    for fft_frame in fft_results:
+        for i in range(len(bands)):
+            if bands_levels[i] is not None:
+                bands_levels[i].append(int((np.max(fft_frame[bands[i][0]:bands[i][1]]) / max_levels[i]) * 4095))
 
-# Middle layer that converts from freq to index
-def band_levels_gen(fft_results, frame_rate, chunk_size, low_freq, high_freq):
-    # Extract frequencies in the specified range
-    low_index = int(low_freq / (frame_rate / chunk_size))
-    high_index = int(high_freq / (frame_rate / chunk_size))
-    return band_levels_gen_idx(fft_results, low_index, high_index)
+    return bands_levels
 
-def band_compute(low_freq, high_freq, fft_results, timestamps, frame_rate, chunk_size, simulation):
-    levels = []
+def band_compute(bands, fft_results, timestamps, frame_rate, chunk_size, simulation):
+    for i in range(len(bands)):
+        # Extract frequencies in the specified range
+        low_index = int(bands[i][0] / (frame_rate / chunk_size))
+        high_index = int(bands[i][1] / (frame_rate / chunk_size))
+        bands[i] = (low_index, high_index, bands[i][2])
 
-    # Extract frequencies in the specified range
-    low_index = int(low_freq / (frame_rate / chunk_size))
-    high_index = int(high_freq / (frame_rate / chunk_size))
-
-    # Generate bass levels
-    levels, max_level = band_levels_gen_idx(fft_results, low_index, high_index)
+    # Generate levels
+    bands_levels = bands_levels_gen(fft_results, bands)
 
     if not simulation:
-        # Ensure each frame corresponds to 1/60th of a second
-        # and ensure smooth brightness updates per 1/60s
         expected_frames = int((timestamps[-1] - timestamps[0]) * 60)  # Total number of frames needed
-        levels = np.interp(np.linspace(0, len(levels)-1, expected_frames), np.arange(len(levels)), levels)
-        levels = np.round(levels).astype(int)
-    return levels
+        for i in range(len(bands_levels)):
+            if bands_levels[i] is None:
+                continue
+            # Ensure each frame corresponds to 1/60th of a second
+            # and ensure smooth brightness updates per 1/60s
+            levels = bands_levels[i]
+            levels = np.interp(np.linspace(0, len(levels)-1, expected_frames), np.arange(len(levels)), levels)
+            levels = np.round(levels).astype(int)
+            bands_levels[i] = levels
 
-def glyph_compute(fft_results, timestamps, frame_rate, chunk_size, simulation=False):
+    max_length = 0
+    if not all(x is None for x in bands_levels):
+        max_length = max(len(x) for x in bands_levels if x is not None) # bands_levels and max length of an arr
+    return bands_levels, max_length
+
+def glyph_compute(bands, fft_results, timestamps, frame_rate, chunk_size, simulation=False):
     ret = []
-    bass_levels = band_compute(20, 277, fft_results, timestamps, frame_rate, chunk_size, simulation)
-    for level in bass_levels:
+    # Will return an array of exactly the same numbers of bands, even if they are not used, the not used ones will have None as element, the others will have an array of the levels
+    bands_levels, length = band_compute(bands, fft_results, timestamps, frame_rate, chunk_size, simulation)
+
+    # Combine levels from each band and put them into the correct led section of the glyph data
+    # Iterate over all levels
+    for i in range(length):
+        glyph_data = []
+        # For each level on each band, add them to the correct glyph index
+        # Iterate over all bands and push them to the correct element in the glyph data
+        for b in range(len(bands)):
+            # Band not used
+            if bands_levels[b] is None:
+                # Fill unused leds with zeroes, number of leds covered by band is third index:
+                for j in range(bands[b][2]):
+                    glyph_data.append(0)
+            # Band used
+            else:
+                if bands[b][2] == 1: # One element used
+                    glyph_data.append(bands_levels[b][i]) # [which band][which level value in that band]
+                else:
+                    glyph_data += bar(bands_levels[b][i], bands[b][2], genarr=True)
         if simulation:
-            ret.append([0,0,0,0,0,0,0] + bar(level, 8, genarr=simulation))
+            ret.append(glyph_data)
         else:
-            ret.append(f"0,0,0,0,0,0,0,{bar(level, 8)},\r\n")
+            ret.append(",".join(map(str, glyph_data)) + ",\r\n")
+        glyph_data = []
     return ret
 
 # Generate an OGG file compatible with Nothing Glyph
-def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=False):
+def generate_nothing_ogg(wav_file, output_file, inspect=False):
     fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*4, overlap=0.5)
 
+    bands = [
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (20,277,8)
+    ]
+
     # Generate CSV light data for USB Line
-    csv_lines = glyph_compute(fft_results, timestamps, frame_rate, chunk_size)
+    csv_lines = glyph_compute(bands, fft_results, timestamps, frame_rate, chunk_size)
 
     # Add blank line at the end to turn off the glyph leds
     csv_lines.append(f"0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\r\n")
@@ -163,16 +205,26 @@ def generate_nothing_ogg(wav_file, output_file, low_freq, high_freq, inspect=Fal
     if inspect:
         print("Decoded csv_lines:")
         print("".join(csv_lines))
-        print(f"Number of lines: {len(bass_levels)}")
+        print(f"Number of lines: {len(csv_lines)}")
         print(f"Sound length: {ogg.info.length}s")
-        print(f"Glyph length: {len(bass_levels)*(1/60)}s")
+        print(f"Glyph length: {len(csv_lines)*(1/60)}s")
 
 def audio_visualizer(wav_file):
     print("Running optimized audio visualizer...")
     
     # Precompute FFT for visualization
     fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*1, overlap=0.5)
-    glyph_data = glyph_compute(fft_results, timestamps, frame_rate, chunk_size, simulation=True)
+
+    bands = [
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (0,0,1),
+        (20,277,9)
+    ]
+    glyph_data = [glyph_compute(bands, fft_results, timestamps, frame_rate, chunk_size, simulation=True)]
 
     # Open audio stream
     wf = wave.open(wav_file, 'rb')
@@ -231,7 +283,16 @@ def audio_visualizer(wav_file):
     def update_selected_range():
         min_freq, max_freq = region.getRegion()
         freq_label.setText(f"Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz")
-        #bass_levels, max_level = band_levels_gen(fft_results, frame_rate, chunk_size, log_to_freq(min_freq), log_to_freq(max_freq))
+        bands = [
+            (0,0,1),
+            (0,0,1),
+            (0,0,1),
+            (0,0,1),
+            (0,0,1),
+            (0,0,1),
+            (log_to_freq(min_freq),log_to_freq(max_freq),9)
+        ]
+        glyph_data[0] = glyph_compute(bands, fft_results, timestamps, frame_rate, chunk_size, simulation=True)
 
     region.sigRegionChanged.connect(update_selected_range)
     update_selected_range()  # Initialize label
@@ -263,7 +324,8 @@ def audio_visualizer(wav_file):
             max_freq = log_to_freq(max_freq)
             #if min_freq >= 0 and max_freq < len(fft_results[index[0]]):
             #    bar_window.update(bass_levels[index[0]])
-            glyph_win.glyph_update(glyph_data[index[0]])
+            glyph_win.glyph_update(glyph_data[0][index[0]])
+            print(glyph_data[0][-30])
 
     # Timer for real-time updates (~60 FPS)
     timer = QtCore.QTimer()
@@ -271,8 +333,8 @@ def audio_visualizer(wav_file):
     timer.start(int((chunk_size / frame_rate) * 1000))  # Ensure update interval matches audio playback
 
     # Show UI
-    win.show()
     glyph_win.show()
+    win.show()
     app.exec_()
 
     # Wait for audio to finish
@@ -288,8 +350,6 @@ def main():
     parser = argparse.ArgumentParser(description="Process MP3 and generate Nothing-compatible OGG files or visualize audio.")
     parser.add_argument("-c", action="store_true", help="Create an OGG file for Nothing Glyph Composer")
     parser.add_argument("-i", action="store_true", help="Inspect CUSTOM1 data when used with -c")
-    parser.add_argument("-l", type=int, default=20, help="Lower frequency bound for bass extraction (Hz)")
-    parser.add_argument("-u", type=int, default=210, help="Upper frequency bound for bass extraction (Hz)")
     args = parser.parse_args()
     
     mp3_file = "pedro.mp3"
@@ -299,7 +359,7 @@ def main():
     convert_mp3_to_wav(mp3_file, wav_file)
     
     if args.c:
-        generate_nothing_ogg(wav_file, output_file, args.l, args.u, inspect=args.i)
+        generate_nothing_ogg(wav_file, output_file, inspect=args.i)
     else:
         audio_visualizer(wav_file)
 
