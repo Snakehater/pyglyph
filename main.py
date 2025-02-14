@@ -220,6 +220,7 @@ def audio_visualizer(wav_file):
 
     region_selector = [0]
     bands_lock = [False]
+    fontsize = 20
 
     bands = [
         (462,2753,1,"lin"),
@@ -398,7 +399,7 @@ def audio_visualizer(wav_file):
 
     def update_selection(new_selection):
         region_selector[0] = new_selection
-        selector_label.setText(f"Selected item: {repr_leds(bands, new_selection)} @ {new_selection}")
+        selector_label.setText(f"<span style=\"font-size:{fontsize*0.8}pt;\">Selected item: {repr_leds(bands, new_selection)} @ {new_selection}</span>")
         if (bands[new_selection][0] < bands[new_selection][1]):
             region.setRegion(tuple(map(freq_to_log, bands[new_selection][:2])))
         # Update inputs
@@ -424,7 +425,7 @@ def audio_visualizer(wav_file):
     # Function to update frequency label when region selection changes
     def update_selected_range():
         min_freq, max_freq = region.getRegion()
-        freq_label.setText(f"Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz")
+        freq_label.setText(f"<span style=\"font-size:{fontsize}pt;\">Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz</span>")
         bands[region_selector[0]] = (log_to_freq(min_freq),log_to_freq(max_freq)) + bands[region_selector[0]][2:]
         sync_bands()
 
