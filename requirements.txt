@@ -6,3 +6,4 @@ scipy
 mutagen
 pyqtgraph
 PyQt5
+yt-dlp
