@@ -174,6 +174,17 @@ def audio_visualizer(wav_file):
     bands_lock[0] = True
     toggle_input4()
     bands_lock[0] = False
+
+    # Create a button
+    button = QtWidgets.QPushButton("Save")
+    button.clicked.connect(update_band)
+
+    # Use QGraphicsProxyWidget to embed the button in pyqtgraph layout
+    button_proxy = QtWidgets.QGraphicsProxyWidget()
+    button_proxy.setWidget(button)
+
+    # Add the button below the input fields (row 1, column 0, spanning all columns)
+    input_layout.addItem(button_proxy, 1, 0, 1, 5)  # Spanning 5 columns to center it
     ###############################################################################
 
     # Convert frequencies to log scale for selection
@@ -196,12 +207,12 @@ def audio_visualizer(wav_file):
         return "-".join(map(str, map(int, bands[idx][:2]))) + "(Hz): " + bands[idx][3] + "[" + ", ".join(map(str, leds[offset:offset+bands[idx][2]])) + "]"
 
     def update_selection(new_selection):
+        bands_lock[0] = True
         region_selector[0] = new_selection
         selector_label.setText(f"<span style=\"font-size:{fontsize*0.8}pt;\">Selected item: {repr_leds(bands, new_selection)} @ {new_selection}</span>")
         if (bands[new_selection][0] < bands[new_selection][1]):
             region.setRegion(tuple(map(freq_to_log, bands[new_selection][:2])))
         # Update inputs
-        bands_lock[0] = True
         input1.setText(str(int(bands[new_selection][0])))
         input2.setText(str(int(bands[new_selection][1])))
         input3.setText(str(int(bands[new_selection][2])))
@@ -211,17 +222,19 @@ def audio_visualizer(wav_file):
         update_glyph_selector_win()
     update_selection(0)
 
-    up_sc = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Up), win)
-    down_sc = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Down), win)
-    def au():
+    left_sc = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Left), win)
+    right_sc = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Right), win)
+    def al():
         update_selection(region_selector[0] - 1 if region_selector[0] != 0 else len(bands) - 1)
-    def ad():
+    def ar():
         update_selection(region_selector[0] + 1 if region_selector[0] != len(bands) - 1 else 0)
-    up_sc.activated.connect(au)
-    down_sc.activated.connect(ad)
+    left_sc.activated.connect(al)
+    right_sc.activated.connect(ar)
 
     # Function to update frequency label when region selection changes
     def update_selected_range():
+        if bands_lock[0]:
+            return
         min_freq, max_freq = region.getRegion()
         freq_label.setText(f"<span style=\"font-size:{fontsize}pt;\">Selected Frequency Range: {log_to_freq(min_freq):.2f} Hz - {log_to_freq(max_freq):.2f} Hz</span>")
         bands[region_selector[0]] = (log_to_freq(min_freq),log_to_freq(max_freq)) + bands[region_selector[0]][2:]
