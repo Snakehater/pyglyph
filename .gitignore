@@ -3,3 +3,4 @@
 *.wav
 .venv*
 __pycache__
+*.bands

@@ -10,7 +10,7 @@ from glyph import GlyphUI
 from fft import precompute_fft
 from fft import glyph_compute
 
-def audio_visualizer(wav_file):
+def audio_visualizer(wav_file, bands, bands_file):
     print("Running optimized audio visualizer...")
     
     # Precompute FFT for visualization
@@ -20,12 +20,13 @@ def audio_visualizer(wav_file):
     bands_lock = [False]
     fontsize = 20
 
-    bands = [
-        (462,2753,1,"lin"),
-        (462,2753,1,"lin"),
-        (20,277,4,"tht", 1024*3),
-        (20,277,9, "bar")
-    ]
+    if bands == None:
+        bands = [
+            (462,2753,1,"lin"),
+            (462,2753,1,"lin"),
+            (20,277,4,"tht", 1024*3),
+            (20,277,9, "bar")
+        ]
     glyph_data = [glyph_compute(bands, fft_results, timestamps, frame_rate, chunk_size, simulation=True)]
 
     # Open audio stream
@@ -175,9 +176,20 @@ def audio_visualizer(wav_file):
     toggle_input4()
     bands_lock[0] = False
 
+    def save_bands():
+        with open("current.bands" if bands_file == None else bands_file, "w+") as f:
+            for band in bands:
+                for e in band:
+                    if isinstance(e, float):
+                        f.write(str(int(e)) + ",")
+                    else:
+                        f.write(str(e) + ",")
+                f.write("\n")
+        print(f"Bands saved to file {'current.bands' if bands_file == None else bands_file}")
+
     # Create a button
     button = QtWidgets.QPushButton("Save")
-    button.clicked.connect(update_band)
+    button.clicked.connect(save_bands)
 
     # Use QGraphicsProxyWidget to embed the button in pyqtgraph layout
     button_proxy = QtWidgets.QGraphicsProxyWidget()

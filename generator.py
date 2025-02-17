@@ -18,15 +18,16 @@ def validate_ogg(ogg_file):
         raise RuntimeError(f"FFmpeg validation failed: {e}")
 
 # Generate an OGG file compatible with Nothing Glyph
-def generate_nothing_ogg(wav_file, output_file, inspect=False):
+def generate_nothing_ogg(wav_file, output_file, inspect=False, bands=None):
     fft_results, timestamps, frame_rate, chunk_size = precompute_fft(wav_file, chunk_size=2048*4, overlap=0.5)
 
-    bands = [
-        (462,2753,1,"lin"),
-        (462,2753,1,"lin"),
-        (20,277,4,"tht", 1024*3),
-        (20,277,9, "bar")
-    ]
+    if bands == None:
+        bands = [
+            (462,2753,1,"lin"),
+            (462,2753,1,"lin"),
+            (20,277,4,"tht", 1024*3),
+            (20,277,9, "bar")
+        ]
 
     # Generate CSV light data for USB Line
     csv_lines = glyph_compute(bands, fft_results, timestamps, frame_rate, chunk_size)
