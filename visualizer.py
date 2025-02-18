@@ -9,6 +9,30 @@ import threading
 from glyph import GlyphUI
 from fft import precompute_fft
 from fft import glyph_compute
+from playback import PlaybackUI
+
+class GlobalShortcutFilter(QtCore.QObject):
+    def __init__(self, stream, p, pause_fun, parent=None):
+        super().__init__(parent)
+        self.stream = stream
+        self.p = p
+        self.pause_fun = pause_fun
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.KeyPress:
+            if event.key() == QtGui.QKeySequence("Q")[0]:  # Capture "Q" key
+                self.kill_session()
+                return True
+            elif event.key() == QtCore.Qt.Key_Space:
+                self.pause_fun()
+                return True
+        return super().eventFilter(obj, event)
+
+    def kill_session(self):
+        self.stream.stop_stream()
+        self.stream.close()
+        self.p.terminate()
+        exit()
 
 def audio_visualizer(wav_file, bands, bands_file):
     print("Running optimized audio visualizer...")
@@ -19,6 +43,8 @@ def audio_visualizer(wav_file, bands, bands_file):
     region_selector = [0]
     bands_lock = [False]
     fontsize = 20
+    paused = [False]
+    recompute = [False]
 
     if bands == None:
         bands = [
@@ -47,21 +73,28 @@ def audio_visualizer(wav_file, bands, bands_file):
     plot.setLabel('left', "Magnitude")
     plot.setRange(yRange=(0, 20000000), xRange=(0, 22000))  # Adjust range based on your data
 
+    def pause_resume_cb():
+        paused[0] = not paused[0]
+        playback_win.update_state(paused[0])
+    def progress_cb(progress):
+        if progress % 2 != 0:
+            progress += 1
+        index[0] = progress
+        wf.setpos(int((progress/len(fft_results))*(wf.getnframes()-1)))
+
     glyph_win = GlyphUI()
     glyph_win_selector = GlyphUI()
+    playback_win = PlaybackUI(len(fft_results), pause_resume_cb, progress_cb)
 
     glyph_win.move(300, 100)
     win.move(650, 100)
     glyph_win_selector.move(1850, 100)
+    playback_win.move(650, 100 + 800 + 30)
+    playback_win.width(1200)
+    playback_win.update_state(paused[0])
 
-    # Add keyboard shortcut for "Q" to quit the application
-    shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Q"), win)
-    def kill_session():
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
-        exit()
-    shortcut.activated.connect(kill_session)
+    filter = GlobalShortcutFilter(stream, p, pause_resume_cb)
+    app.installEventFilter(filter)
 
     # Prepare frequency axis
     x = np.fft.fftfreq(chunk_size, d=1/frame_rate)[:chunk_size//2]
@@ -72,7 +105,11 @@ def audio_visualizer(wav_file, bands, bands_file):
     plot.vb.setLimits(xMin=0, xMax=5)
 
     def sync_bands():
+        if paused[0]:
+            recompute[0] = True
+            return
         glyph_data[0] = glyph_compute(bands, fft_results, timestamps, frame_rate, chunk_size, simulation=True)
+        recompute[0] = False
 
     def update_glyph_selector_win():
         offset = sum(band[2] for band in bands[:region_selector[0]])
@@ -264,11 +301,20 @@ def audio_visualizer(wav_file, bands, bands_file):
     # Thread for audio playback
     def play_audio():
         while index[0] < len(fft_results):
+            if paused[0]:
+                if not stream.is_active():
+                    break
+                continue
+            if recompute[0]:
+                sync_bands()
             data = wf.readframes(chunk_size)
             if len(data) == 0:
                 break
             stream.write(data)
             index[0] += 2  # Move to the next FFT frame
+            if index[0] >= len(fft_results):
+                index[0] = 0
+                wf.setpos(0)
 
     audio_thread = threading.Thread(target=play_audio)
     audio_thread.start()
@@ -283,6 +329,7 @@ def audio_visualizer(wav_file, bands, bands_file):
             #if min_freq >= 0 and max_freq < len(fft_results[index[0]]):
             #    bar_window.update(bass_levels[index[0]])
             glyph_win.glyph_update(glyph_data[0][index[0]])
+            playback_win.update_progress(index[0])
 
     # Timer for real-time updates (~60 FPS)
     timer = QtCore.QTimer()
@@ -292,6 +339,7 @@ def audio_visualizer(wav_file, bands, bands_file):
     # Show UI
     glyph_win.show()
     glyph_win_selector.show()
+    playback_win.show()
     win.show()
     app.exec_()
 
